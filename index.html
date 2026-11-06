@@ -349,6 +349,24 @@ textarea:focus{outline:2px solid var(--gold);outline-offset:1px;border-color:var
           <div style="height:10px"></div>
           <button type="button" class="btn btn-outline" id="btnReceipt" style="width:100%" onclick="submitReceipt()">Enviar comprobante</button>
           <p id="receiptSavedNote" class="hidden" style="font-size:13.5px;color:var(--green);margin:8px 0 0">Comprobante enviado, en revisión.</p>
+          <h4 class="subh">Verificación automática del pago</h4>
+          <p style="font-size:13.5px;color:var(--muted);margin:0 0 8px">El documento <b>no</b> se desbloquea solo por subir la foto. Para verificarlo, el sistema consulta el CEP oficial de Banxico con los datos de tu transferencia: debe coincidir el monto con el precio del documento y la CLABE de Gestoría Chiapas.</p>
+          <label class="f" for="payTracking">Clave de rastreo de la transferencia</label>
+          <input type="text" id="payTracking" placeholder="La clave de rastreo que viene en tu comprobante" autocomplete="off">
+          <label class="f" for="payDate">Fecha de la transferencia</label>
+          <input type="date" id="payDate">
+          <label class="f" for="payBankFrom">Banco desde el que transferiste (opcional)</label>
+          <input type="text" id="payBankFrom" placeholder="Ej. BBVA, Banorte, Santander, Nu...">
+          <div style="height:10px"></div>
+          <button type="button" class="btn btn-primary" id="btnVerify" style="width:100%" onclick="verificarPagoAutomatico()">Verificar mi pago automáticamente</button>
+          <p id="verifyResult" class="hidden" style="font-size:14px;margin:10px 0 0"></p>
+          <div style="height:10px"></div>
+          <button type="button" class="btn btn-outline" style="width:100%" onclick="verificarEnBanxico()">Verificar en el portal de Banxico</button>
+          <div id="downloadBlock" class="hidden" style="margin-top:14px">
+            <p style="font-size:14px;color:var(--green);margin:0 0 8px"><b>¡Pago verificado correctamente! Tu documento ya está desbloqueado y disponible para descargar.</b></p>
+            <button type="button" class="btn btn-primary" style="width:100%" onclick="descargarDocumento()">Descargar mi documento</button>
+            <p style="font-size:13px;color:var(--muted);margin:8px 0 0">La gestora ya recibió tu pedido verificado por WhatsApp y te enviará el acta o la constancia por ese mismo medio.</p>
+          </div>
         </div>
         <div class="kv" style="margin-top:10px"><span>Estado del pedido</span><span class="val"><span class="chip proc" id="payStatusChip"></span></span></div>
         <div style="height:14px"></div>
@@ -420,6 +438,28 @@ textarea:focus{outline:2px solid var(--gold);outline-offset:1px;border-color:var
           <div style="height:10px"></div>
           <button class="btn btn-outline" type="button" style="width:100%" onclick="restoreDefaults()">Restaurar los valores originales</button>
         </form>
+        <form onsubmit="return saveVerifyConfig(event)" style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px">
+          <h4 class="subh">Verificación automática de pagos (CEP de Banxico)</h4>
+          <p style="font-size:13.5px;color:var(--muted);margin:0 0 10px">La verificación automática consulta el CEP oficial de Banxico a través de un proveedor (Veriko, apiCEP o SPEICEP). Pega aquí la dirección y la clave de API que te da el proveedor en su panel. <b>Sin esa clave, la página NO desbloquea por sí sola:</b> el pago queda pendiente de confirmación y se avisa a la dueña por WhatsApp, como hasta ahora. La clave se guarda solo en este celular, nunca se publica en la página.</p>
+          <label class="f" for="vfProvider">Proveedor de verificación</label>
+          <select id="vfProvider">
+            <option value="veriko">Veriko (valida contra CEP de Banxico)</option>
+            <option value="apicep">apiCEP (valida contra CEP de Banxico)</option>
+            <option value="speicep">SPEICEP (valida contra CEP de Banxico)</option>
+            <option value="otro">Otro proveedor con API de CEP</option>
+          </select>
+          <label class="f" for="vfEndpoint">Dirección (URL) de la API de verificación</label>
+          <input type="url" id="vfEndpoint" placeholder="Ej. https://speicep.com/api/v1/validate">
+          <label class="f" for="vfApiKey">Clave de API del proveedor</label>
+          <input type="password" id="vfApiKey" placeholder="Tu clave de API (empieza con veriko_ en Veriko)" autocomplete="off">
+          <label class="f" for="vfWaToken">WhatsApp Business: token (opcional, para avisar a la dueña sin abrir el chat)</label>
+          <input type="password" id="vfWaToken" placeholder="Token de WhatsApp Business Cloud API (opcional)" autocomplete="off">
+          <label class="f" for="vfWaPhoneId">WhatsApp Business: ID del número de teléfono (opcional)</label>
+          <input type="text" id="vfWaPhoneId" placeholder="ID del número en Meta (opcional)" autocomplete="off">
+          <div class="err" id="verifyCfgErr"></div>
+          <button class="btn btn-primary" type="submit">Guardar verificación automática</button>
+          <p style="font-size:13px;color:var(--muted);margin:10px 0 0">Sin el token de WhatsApp Business, el aviso a la dueña se manda abriendo el chat de WhatsApp con el mensaje ya escrito (la foto del comprobante se adjunta en ese chat).</p>
+        </form>
         <p class="admin-note">Los cambios se guardan solo en este celular y no se pasan solos a los celulares de los clientes. Para que los cambios lleguen a todos los celulares hace falta conectar la tienda a un servidor.</p>
       </div>
     </section>
@@ -464,6 +504,15 @@ var K_USERS = "gc_tienda_users";
 var K_SETTINGS = "gc_tienda_settings";
 var K_SESSION = "gc_tienda_session";
 var K_ORDERS = "gc_tienda_orders";
+var K_VERIFY = "gc_tienda_verify_config";
+var K_USED_KEYS = "gc_tienda_used_keys";
+var K_HISTORY = "gc_tienda_history";
+/* Verificación automática: la página NO desbloquea por subir una foto.
+   Solo desbloquea cuando el proveedor de verificación confirma contra el
+   CEP oficial de Banxico que la transferencia SPEI existe, que el monto
+   coincide con el precio y que la CLABE beneficiaria es la de la tienda.
+   La dirección y la clave del proveedor las registra la dueña en su panel;
+   sin ellas, el pago queda pendiente de confirmación (nunca se simula). */
 var state = { user: null, orders: [], currentFolio: null };
 var pendingReceiptData = null;
 
@@ -758,7 +807,7 @@ function go(view){
   if(view==="pedidos") renderOrders();
   if(view==="pago") renderPay();
   if(view==="pedido") syncOrderForm();
-  if(view==="admin") fillAdminForm();
+  if(view==="admin"){ fillAdminForm(); fillVerifyForm(); }
 }
 function startOrder(key){
   document.getElementById("rqService").value = key;
@@ -851,6 +900,9 @@ function renderPay(){
   var rPrev = document.getElementById("receiptPreview"); var rWrap = document.getElementById("receiptPreviewWrap"); var rNote = document.getElementById("receiptSavedNote");
   if(order.receipt){ if(rPrev) rPrev.src = order.receipt; if(rWrap) rWrap.classList.remove("hidden"); if(rNote) rNote.classList.remove("hidden"); }
   else { if(rWrap) rWrap.classList.add("hidden"); if(rNote) rNote.classList.add("hidden"); }
+  var tk2 = document.getElementById("payTracking"); if(tk2) tk2.value = order.trackingKey || "";
+  var pd2 = document.getElementById("payDate"); if(pd2) pd2.value = order.transferDate || "";
+  renderVerifyUI(order);
 }
 function markPaid(){
   var order = currentOrder(); if(!order) return;
@@ -896,6 +948,8 @@ function submitReceipt(){
   }
   try{
     if(pendingReceiptData) order.receipt = pendingReceiptData;
+    var tk = document.getElementById("payTracking"); if(tk && tk.value.trim()) order.trackingKey = tk.value.trim().toUpperCase();
+    var pd = document.getElementById("payDate"); if(pd && pd.value) order.transferDate = pd.value;
     order.status = "Comprobante enviado, en revisión";
     saveOrders(); renderPay(); renderOrders();
     pendingReceiptData = null;
@@ -940,6 +994,248 @@ function renderOrders(){
     h += "</div></div>";
   });
   box.innerHTML = h;
+}
+
+/* ---------- verificación automática de pagos (CEP de Banxico) ---------- */
+function getVerifyConfig(){
+  var saved = loadJSON(K_VERIFY, null) || {};
+  return {
+    provider: saved.provider || "veriko",
+    endpoint: (saved.endpoint || "").trim(),
+    apiKey: (saved.apiKey || "").trim(),
+    waToken: (saved.waToken || "").trim(),
+    waPhoneId: (saved.waPhoneId || "").trim()
+  };
+}
+function fillVerifyForm(){
+  var c = getVerifyConfig();
+  var setVal = function(id, v){ var el = document.getElementById(id); if(el) el.value = v; };
+  setVal("vfProvider", c.provider); setVal("vfEndpoint", c.endpoint);
+  setVal("vfApiKey", c.apiKey); setVal("vfWaToken", c.waToken); setVal("vfWaPhoneId", c.waPhoneId);
+  var err = document.getElementById("verifyCfgErr"); if(err) err.textContent = "";
+}
+function saveVerifyConfig(ev){
+  ev.preventDefault();
+  if(!isOwnerSession()){ toast("Solo la dueña puede cambiar la verificación."); return false; }
+  var err = document.getElementById("verifyCfgErr");
+  var getVal = function(id){ var el = document.getElementById(id); return el ? el.value.trim() : ""; };
+  var endpoint = getVal("vfEndpoint"), apiKey = getVal("vfApiKey");
+  err.textContent = "";
+  if((endpoint && !apiKey) || (!endpoint && apiKey)){
+    err.textContent = "Para activar la verificación automática pon la dirección y la clave de API juntas. Para desactivarla, deja las dos vacías.";
+    return false;
+  }
+  if(endpoint && endpoint.indexOf("https://") !== 0){
+    err.textContent = "La dirección de la API debe empezar con https://"; return false;
+  }
+  saveJSON(K_VERIFY, {
+    provider: getVal("vfProvider") || "veriko",
+    endpoint: endpoint, apiKey: apiKey,
+    waToken: getVal("vfWaToken"), waPhoneId: getVal("vfWaPhoneId")
+  });
+  toast(endpoint ? "Verificación automática activada." : "Verificación automática desactivada. Los pagos quedan pendientes de confirmación.");
+  return false;
+}
+function usedKeys(){
+  var list = loadJSON(K_USED_KEYS, []);
+  return Array.isArray(list) ? list : [];
+}
+function isKeyUsed(key, folio){
+  var list = usedKeys();
+  for(var i=0;i<list.length;i++) if(list[i].key === key && list[i].folio !== folio) return true;
+  return false;
+}
+function markKeyUsed(key, folio){
+  var list = usedKeys();
+  list.push({ key: key, folio: folio, at: Date.now() });
+  saveJSON(K_USED_KEYS, list);
+}
+function addHistory(entry){
+  var list = loadJSON(K_HISTORY, []);
+  if(!Array.isArray(list)) list = [];
+  list.unshift(entry);
+  saveJSON(K_HISTORY, list.slice(0, 200));
+}
+function showVerifyResult(kind, msg){
+  var el = document.getElementById("verifyResult"); if(!el) return;
+  el.classList.remove("hidden");
+  el.style.color = kind === "ok" ? "var(--green)" : (kind === "err" ? "#b3261e" : "var(--muted)");
+  el.textContent = msg;
+}
+function renderVerifyUI(order){
+  var block = document.getElementById("downloadBlock");
+  var res = document.getElementById("verifyResult");
+  var btn = document.getElementById("btnVerify");
+  if(!block) return;
+  if(order && order.status === "PAGADO"){
+    block.classList.remove("hidden");
+    if(res){ res.classList.remove("hidden"); res.style.color = "var(--green)"; res.textContent = "¡Pago verificado correctamente! Tu documento ya está desbloqueado y disponible para descargar."; }
+    if(btn) btn.disabled = true;
+  } else {
+    block.classList.add("hidden");
+    if(btn) btn.disabled = false;
+  }
+}
+function verificarEnBanxico(){
+  var order = currentOrder();
+  var tk = document.getElementById("payTracking");
+  var key = tk ? tk.value.trim().toUpperCase() : "";
+  var pd = document.getElementById("payDate");
+  var s = getSettings();
+  var lines = [];
+  if(key) lines.push("Clave de rastreo: " + key);
+  if(pd && pd.value) lines.push("Fecha: " + pd.value);
+  if(order) lines.push("Monto: " + money(order.price));
+  lines.push("CLABE beneficiaria: " + String(s.clabe).replace(/\D/g, ""));
+  lines.push("Banco receptor: " + s.bank);
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(lines.join("\n")).catch(function(){});
+  }
+  window.open("https://www.banxico.org.mx/cep/", "_blank", "noopener");
+  toast("Copié los datos del pago. Pégalos en el portal de Banxico para consultar el CEP.");
+}
+function avisarDuenaWhatsApp(order, verificado){
+  var s = getSettings();
+  var lines = [];
+  lines.push(verificado ? "PAGO VERIFICADO — Gestoría Chiapas" : "Pago pendiente de confirmación — Gestoría Chiapas");
+  lines.push("Servicio: " + order.serviceName);
+  lines.push("Nombre: " + order.name);
+  lines.push("Monto: " + money(order.price));
+  lines.push("Folio del pedido: " + order.folio);
+  if(order.trackingKey) lines.push("Clave de rastreo: " + order.trackingKey);
+  if(order.transferDate) lines.push("Fecha de la transferencia: " + order.transferDate);
+  if(order.verified && order.verified.provider) lines.push("Verificado con: " + order.verified.provider + " (CEP de Banxico)");
+  lines.push("Estado: " + order.status);
+  lines.push("El cliente adjunta la foto de su comprobante en este chat.");
+  var text = lines.join("\n");
+  var cfg = getVerifyConfig();
+  if(verificado && cfg.waToken && cfg.waPhoneId){
+    fetch("https://graph.facebook.com/v19.0/" + encodeURIComponent(cfg.waPhoneId) + "/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cfg.waToken },
+      body: JSON.stringify({ messaging_product: "whatsapp", to: WA_NUMBER, type: "text", text: { body: text } })
+    }).catch(function(){ window.open("https://wa.me/" + WA_NUMBER + "?text=" + encodeURIComponent(text), "_blank", "noopener"); });
+    return;
+  }
+  window.open("https://wa.me/" + WA_NUMBER + "?text=" + encodeURIComponent(text), "_blank", "noopener");
+}
+function descargarDocumento(){
+  var order = currentOrder(); if(!order || order.status !== "PAGADO") return;
+  var s = getSettings();
+  var lines = [];
+  lines.push("GESTORÍA CHIAPAS — TRÁMITES DIGITALES");
+  lines.push("Comprobante de pago verificado");
+  lines.push("----------------------------------------");
+  lines.push("Folio del pedido: " + order.folio);
+  lines.push("Servicio: " + order.serviceName);
+  lines.push("Nombre: " + order.name);
+  lines.push("Monto pagado: " + money(order.price));
+  lines.push("Banco: " + s.bank);
+  lines.push("CLABE: " + String(s.clabe).replace(/\D/g, ""));
+  lines.push("Beneficiario: " + s.beneficiary);
+  if(order.trackingKey) lines.push("Clave de rastreo: " + order.trackingKey);
+  if(order.transferDate) lines.push("Fecha de la transferencia: " + order.transferDate);
+  if(order.verified) lines.push("Verificación: CEP de Banxico confirmado por " + order.verified.provider + " el " + order.verified.at);
+  lines.push("Estado: PAGADO");
+  lines.push("");
+  lines.push("¡Pago verificado correctamente! Tu documento ya está desbloqueado y disponible para descargar.");
+  lines.push("La gestora te enviará el acta o la constancia por WhatsApp o correo.");
+  var blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "Gestoria-Chiapas-" + order.folio + "-PAGADO.txt";
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  toast("Descarga lista. La gestora te enviará tu documento por WhatsApp.");
+}
+function verificarPagoAutomatico(){
+  var order = currentOrder();
+  if(!order){ toast("Primero crea tu pedido."); return; }
+  if(order.status === "PAGADO"){ renderVerifyUI(order); return; }
+  var tkEl = document.getElementById("payTracking");
+  var pdEl = document.getElementById("payDate");
+  var bfEl = document.getElementById("payBankFrom");
+  var key = tkEl ? tkEl.value.trim().toUpperCase() : "";
+  var fecha = pdEl ? pdEl.value : "";
+  var bancoEmisor = bfEl ? bfEl.value.trim() : "";
+  if(!key || !fecha){
+    showVerifyResult("err", "Escribe la clave de rastreo y la fecha de tu transferencia. Esos datos vienen en tu comprobante.");
+    return;
+  }
+  if(!pendingReceiptData && !order.receipt){
+    showVerifyResult("err", "Primero sube la foto de tu comprobante y presiona Enviar comprobante.");
+    return;
+  }
+  order.trackingKey = key; order.transferDate = fecha;
+  if(isKeyUsed(key, order.folio)){
+    showVerifyResult("err", "Esa clave de rastreo ya se usó en otro pedido. No se puede usar dos veces.");
+    return;
+  }
+  var cfg = getVerifyConfig();
+  var s = getSettings();
+  if(!cfg.endpoint || !cfg.apiKey){
+    order.status = "Pendiente de confirmación";
+    saveOrders(); renderPay(); renderOrders();
+    showVerifyResult("warn", "Tu pago quedó registrado y está pendiente de confirmación. La verificación automática se activa cuando la dueña registre su clave del proveedor (CEP de Banxico). Tu comprobante ya se mandó a la dueña por WhatsApp.");
+    avisarDuenaWhatsApp(order, false);
+    addHistory({ folio: order.folio, service: order.serviceName, price: order.price, key: key, date: fecha, status: "Pendiente de confirmación", at: nowStr() });
+    return;
+  }
+  var btn = document.getElementById("btnVerify");
+  if(btn){ btn.disabled = true; btn.textContent = "Verificando pago..."; }
+  showVerifyResult("warn", "Verificando tu pago contra el CEP de Banxico...");
+  fetch(cfg.endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cfg.apiKey },
+    body: JSON.stringify({
+      fecha: fecha, monto: Number(order.price), claveRastreo: key,
+      cuentaBeneficiaria: String(s.clabe).replace(/\D/g, ""),
+      bancoReceptor: s.bank, bancoEmisor: bancoEmisor || undefined,
+      referenciaNumerica: order.folio
+    })
+  }).then(function(res){ return res.json().then(function(body){ return { ok: res.ok, body: body }; }); })
+  .then(function(out){
+    var body = out.body || {};
+    var v = body.validation || body.data || body;
+    var status = String(v.status || v.veredicto || v.result || "").toLowerCase();
+    var esValido = out.ok && (status === "valid" || status === "válido" || status === "valido" || status === "existente" || v.valid === true || body.valid === true || body.success === true);
+    var montoDevuelto = Number(v.monto || v.amount || body.monto || body.amount);
+    var cuentaDevuelta = String(v.cuentaBeneficiaria || v.cuenta || body.cuentaBeneficiaria || "").replace(/\D/g, "");
+    if(esValido && montoDevuelto && Math.abs(montoDevuelto - Number(order.price)) > 0.01){
+      esValido = false;
+      showVerifyResult("err", "El monto verificado (" + money(montoDevuelto) + ") no coincide con el precio del documento (" + money(order.price) + "). El documento sigue bloqueado.");
+      return;
+    }
+    if(esValido && cuentaDevuelta && cuentaDevuelta !== String(s.clabe).replace(/\D/g, "")){
+      esValido = false;
+      showVerifyResult("err", "La transferencia verificada no llegó a la CLABE de Gestoría Chiapas. El documento sigue bloqueado.");
+      return;
+    }
+    if(!esValido){
+      order.status = "Pendiente de confirmación";
+      saveOrders(); renderPay(); renderOrders();
+      showVerifyResult("err", "No se pudo verificar el depósito en Banxico. Tu documento sigue bloqueado y tu pago está pendiente de confirmación. Revisa la clave de rastreo y la fecha, o avisa a la dueña por WhatsApp.");
+      avisarDuenaWhatsApp(order, false);
+      addHistory({ folio: order.folio, service: order.serviceName, price: order.price, key: key, date: fecha, status: "Pendiente de confirmación", at: nowStr() });
+      return;
+    }
+    order.status = "PAGADO";
+    order.verified = { provider: cfg.provider, key: key, date: fecha, amount: Number(order.price), at: nowStr() };
+    markKeyUsed(key, order.folio);
+    saveOrders(); renderPay(); renderOrders();
+    addHistory({ folio: order.folio, service: order.serviceName, price: order.price, key: key, date: fecha, status: "PAGADO", at: nowStr() });
+    showVerifyResult("ok", "¡Pago verificado correctamente! Tu documento ya está desbloqueado y disponible para descargar.");
+    toast("¡Pago verificado correctamente! Tu documento ya está desbloqueado y disponible para descargar.");
+    avisarDuenaWhatsApp(order, true);
+  }).catch(function(){
+    order.status = "Pendiente de confirmación";
+    saveOrders(); renderPay(); renderOrders();
+    showVerifyResult("err", "No se pudo contactar al servicio de verificación. Tu pago está pendiente de confirmación y tu comprobante se mandó a la dueña por WhatsApp.");
+    avisarDuenaWhatsApp(order, false);
+  }).finally(function(){
+    var b = document.getElementById("btnVerify");
+    if(b){ b.disabled = false; b.textContent = "Verificar mi pago automáticamente"; }
+  });
 }
 
 /* ---------- transfer copy ---------- */
