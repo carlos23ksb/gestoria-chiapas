@@ -440,18 +440,20 @@ textarea:focus{outline:2px solid var(--gold);outline-offset:1px;border-color:var
         </form>
         <form onsubmit="return saveVerifyConfig(event)" style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px">
           <h4 class="subh">Verificación automática de pagos (CEP de Banxico)</h4>
-          <p style="font-size:13.5px;color:var(--muted);margin:0 0 10px">La verificación automática consulta el CEP oficial de Banxico a través de un proveedor (Veriko, apiCEP o SPEICEP). Pega aquí la dirección y la clave de API que te da el proveedor en su panel. <b>Sin esa clave, la página NO desbloquea por sí sola:</b> el pago queda pendiente de confirmación y se avisa a la dueña por WhatsApp, como hasta ahora. La clave se guarda solo en este celular, nunca se publica en la página.</p>
+          <p style="font-size:13.5px;color:var(--muted);margin:0 0 10px">La verificación automática consulta el CEP oficial de Banxico a través de SPEICEP. Para activarla, crea la cuenta <b>gratis</b> en speicep.com (plan Bienvenida: 100 validaciones por API, 30 días, sin tarjeta), registra ahí la cuenta receptora con la CLABE de la tienda (6461 8040 1641 3134 24, banco STP) y pega aquí la clave de API y el ID de esa cuenta. <b>Sin esa clave, la página NO desbloquea por sí sola:</b> el pago queda pendiente de confirmación y se avisa a la dueña por WhatsApp, como hasta ahora. La clave se guarda solo en este celular, nunca se publica en la página. El portal de Banxico no se puede consultar directo desde la página porque pide captcha y no permite llamadas de otros sitios, por eso se usa este proveedor.</p>
           <label class="f" for="vfProvider">Proveedor de verificación</label>
           <select id="vfProvider">
+            <option value="speicep">SPEICEP (valida contra CEP de Banxico) — recomendado, gratis al inicio</option>
             <option value="veriko">Veriko (valida contra CEP de Banxico)</option>
             <option value="apicep">apiCEP (valida contra CEP de Banxico)</option>
-            <option value="speicep">SPEICEP (valida contra CEP de Banxico)</option>
             <option value="otro">Otro proveedor con API de CEP</option>
           </select>
           <label class="f" for="vfEndpoint">Dirección (URL) de la API de verificación</label>
-          <input type="url" id="vfEndpoint" placeholder="Ej. https://speicep.com/api/v1/validate">
+          <input type="url" id="vfEndpoint" placeholder="https://speicep.com/api/v1/validate/manual">
           <label class="f" for="vfApiKey">Clave de API del proveedor</label>
-          <input type="password" id="vfApiKey" placeholder="Tu clave de API (empieza con veriko_ en Veriko)" autocomplete="off">
+          <input type="password" id="vfApiKey" placeholder="Tu clave de API de SPEICEP (empieza con sk_live_)" autocomplete="off">
+          <label class="f" for="vfReceiverId">ID de la cuenta receptora en SPEICEP (opcional, se usa tu cuenta predeterminada si lo dejas vacío)</label>
+          <input type="text" id="vfReceiverId" placeholder="ID de la cuenta receptora (Dashboard → Cuentas receptoras)" autocomplete="off">
           <label class="f" for="vfWaToken">WhatsApp Business: token (opcional, para avisar a la dueña sin abrir el chat)</label>
           <input type="password" id="vfWaToken" placeholder="Token de WhatsApp Business Cloud API (opcional)" autocomplete="off">
           <label class="f" for="vfWaPhoneId">WhatsApp Business: ID del número de teléfono (opcional)</label>
@@ -1000,9 +1002,10 @@ function renderOrders(){
 function getVerifyConfig(){
   var saved = loadJSON(K_VERIFY, null) || {};
   return {
-    provider: saved.provider || "veriko",
-    endpoint: (saved.endpoint || "").trim(),
+    provider: saved.provider || "speicep",
+    endpoint: (saved.endpoint || "https://speicep.com/api/v1/validate/manual").trim(),
     apiKey: (saved.apiKey || "").trim(),
+    receiverId: (saved.receiverId || "").trim(),
     waToken: (saved.waToken || "").trim(),
     waPhoneId: (saved.waPhoneId || "").trim()
   };
@@ -1011,7 +1014,7 @@ function fillVerifyForm(){
   var c = getVerifyConfig();
   var setVal = function(id, v){ var el = document.getElementById(id); if(el) el.value = v; };
   setVal("vfProvider", c.provider); setVal("vfEndpoint", c.endpoint);
-  setVal("vfApiKey", c.apiKey); setVal("vfWaToken", c.waToken); setVal("vfWaPhoneId", c.waPhoneId);
+  setVal("vfApiKey", c.apiKey); setVal("vfReceiverId", c.receiverId); setVal("vfWaToken", c.waToken); setVal("vfWaPhoneId", c.waPhoneId);
   var err = document.getElementById("verifyCfgErr"); if(err) err.textContent = "";
 }
 function saveVerifyConfig(ev){
@@ -1029,8 +1032,9 @@ function saveVerifyConfig(ev){
     err.textContent = "La dirección de la API debe empezar con https://"; return false;
   }
   saveJSON(K_VERIFY, {
-    provider: getVal("vfProvider") || "veriko",
-    endpoint: endpoint, apiKey: apiKey,
+    provider: getVal("vfProvider") || "speicep",
+    endpoint: endpoint || "https://speicep.com/api/v1/validate/manual", apiKey: apiKey,
+    receiverId: getVal("vfReceiverId"),
     waToken: getVal("vfWaToken"), waPhoneId: getVal("vfWaPhoneId")
   });
   toast(endpoint ? "Verificación automática activada." : "Verificación automática desactivada. Los pagos quedan pendientes de confirmación.");
@@ -1184,23 +1188,46 @@ function verificarPagoAutomatico(){
   var btn = document.getElementById("btnVerify");
   if(btn){ btn.disabled = true; btn.textContent = "Verificando pago..."; }
   showVerifyResult("warn", "Verificando tu pago contra el CEP de Banxico...");
+  if(cfg.provider === "speicep" && !bancoEmisor){
+    showVerifyResult("err", "Escribe el banco desde el que transferiste. Con ese dato la verificación consulta el CEP de Banxico sin gastar de más.");
+    return;
+  }
+  var isSpeicep = cfg.provider === "speicep";
+  var parts = fecha.split("-");
+  var fechaSpei = parts.length === 3 ? parts[2] + "-" + parts[1] + "-" + parts[0] : fecha;
+  var reqBody = isSpeicep
+    ? { operationDate: fechaSpei, trackingKey: key, senderBank: bancoEmisor, amount: Number(order.price) }
+    : { fecha: fecha, monto: Number(order.price), claveRastreo: key,
+        cuentaBeneficiaria: String(s.clabe).replace(/\D/g, ""),
+        bancoReceptor: s.bank, bancoEmisor: bancoEmisor || undefined,
+        referenciaNumerica: order.folio };
+  if(isSpeicep && cfg.receiverId) reqBody.receiverAccountId = cfg.receiverId;
   fetch(cfg.endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cfg.apiKey },
-    body: JSON.stringify({
-      fecha: fecha, monto: Number(order.price), claveRastreo: key,
-      cuentaBeneficiaria: String(s.clabe).replace(/\D/g, ""),
-      bancoReceptor: s.bank, bancoEmisor: bancoEmisor || undefined,
-      referenciaNumerica: order.folio
-    })
-  }).then(function(res){ return res.json().then(function(body){ return { ok: res.ok, body: body }; }); })
+    body: JSON.stringify(reqBody)
+  }).then(function(res){ return res.json().then(function(body){ return { ok: res.ok, status: res.status, body: body }; }).catch(function(){ return { ok: res.ok, status: res.status, body: {} }; }); })
   .then(function(out){
     var body = out.body || {};
-    var v = body.validation || body.data || body;
-    var status = String(v.status || v.veredicto || v.result || "").toLowerCase();
-    var esValido = out.ok && (status === "valid" || status === "válido" || status === "valido" || status === "existente" || v.valid === true || body.valid === true || body.success === true);
-    var montoDevuelto = Number(v.monto || v.amount || body.monto || body.amount);
-    var cuentaDevuelta = String(v.cuentaBeneficiaria || v.cuenta || body.cuentaBeneficiaria || "").replace(/\D/g, "");
+    if(!out.ok){
+      var code = body.error || "";
+      var msgProveedor = code === "invalid_api_key" ? "La clave de API del proveedor no es válida. La dueña debe revisar la clave en su Panel de la dueña."
+        : code === "insufficient_credits" ? "Se acabaron las validaciones del proveedor. Hay que recargar créditos en su panel."
+        : code === "no_receiver_account" ? "Falta registrar la cuenta receptora (CLABE de la tienda) en el panel del proveedor."
+        : "El proveedor de verificación no respondió como se esperaba (código " + out.status + ").";
+      order.status = "Pendiente de confirmación";
+      saveOrders(); renderPay(); renderOrders();
+      showVerifyResult("err", msgProveedor + " Tu pago está pendiente de confirmación y tu comprobante se mandó a la dueña por WhatsApp.");
+      avisarDuenaWhatsApp(order, false);
+      return;
+    }
+    var v = body;
+    var status = String(v.status || "").toLowerCase();
+    var esValido = status === "valid";
+    var cep = v.cep || {};
+    var montoDevuelto = Number(cep.amount);
+    var cuentaDevuelta = cep.receiver ? String(cep.receiver.account || "").replace(/\D/g, "") : "";
+    var claveDevuelta = String(cep.trackingKey || "");
     if(esValido && montoDevuelto && Math.abs(montoDevuelto - Number(order.price)) > 0.01){
       esValido = false;
       showVerifyResult("err", "El monto verificado (" + money(montoDevuelto) + ") no coincide con el precio del documento (" + money(order.price) + "). El documento sigue bloqueado.");
@@ -1209,6 +1236,11 @@ function verificarPagoAutomatico(){
     if(esValido && cuentaDevuelta && cuentaDevuelta !== String(s.clabe).replace(/\D/g, "")){
       esValido = false;
       showVerifyResult("err", "La transferencia verificada no llegó a la CLABE de Gestoría Chiapas. El documento sigue bloqueado.");
+      return;
+    }
+    if(esValido && claveDevuelta && claveDevuelta.toUpperCase() !== key){
+      esValido = false;
+      showVerifyResult("err", "La clave de rastreo verificada no coincide con la de tu comprobante. El documento sigue bloqueado.");
       return;
     }
     if(!esValido){
