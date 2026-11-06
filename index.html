@@ -1003,7 +1003,11 @@ function getVerifyConfig(){
   var saved = loadJSON(K_VERIFY, null) || {};
   return {
     provider: saved.provider || "veriko",
-    endpoint: (saved.endpoint || "").trim(),
+    /* La dirección del programa de verificación (Cloudflare Worker) viene
+       puesta por defecto para que la verificación automática funcione en el
+       celular de cualquier cliente sin que nadie tenga que pegarla a mano.
+       La dueña puede cambiarla desde su panel; lo que guarde ahí manda. */
+    endpoint: (saved.endpoint || "https://gestoria-verify.cberroteran400.workers.dev").trim(),
     apiKey: (saved.apiKey || "").trim(),
     receiverId: (saved.receiverId || "").trim(),
     waToken: (saved.waToken || "").trim(),
