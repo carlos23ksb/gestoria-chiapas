@@ -238,6 +238,7 @@ textarea:focus{outline:2px solid var(--gold);outline-offset:1px;border-color:var
     <button data-nav="pedido" onclick="go('pedido')">Hacer pedido</button>
     <button data-nav="pedidos" onclick="go('pedidos')">Mis pedidos</button>
     <button data-nav="transferencia" onclick="go('transferencia')">Datos para transferencia</button>
+    <button data-nav="saldo" onclick="go('saldo')">Mi saldo</button>
     <button data-nav="admin" id="navAdmin" class="hidden" onclick="go('admin')">Panel de dueña</button>
   </div></nav>
 
@@ -315,6 +316,8 @@ textarea:focus{outline:2px solid var(--gold);outline-offset:1px;border-color:var
           </div>
 
           <div class="kv" style="margin-top:10px"><span>Monto a pagar</span><b id="rqPrice"></b></div>
+          <div class="kv"><span>Tu saldo disponible</span><b id="rqSaldo"></b></div>
+          <p id="rqSaldoNote" style="font-size:13px;color:var(--green);margin:6px 0 0"></p>
           <div class="err" id="rqErr"></div>
           <button class="btn btn-primary" type="submit">Crear pedido</button>
           <p style="font-size:13px;color:var(--muted);margin:12px 0 0">Tu documento se libera al confirmarse el pago.</p>
@@ -332,6 +335,8 @@ textarea:focus{outline:2px solid var(--gold);outline-offset:1px;border-color:var
         <div class="kv"><span>Servicio</span><b id="payService"></b></div>
         <div class="kv"><span>Nombre</span><b id="payName"></b></div>
         <div class="kv"><span>Monto a pagar</span><b class="pay-amount" id="payAmount"></b></div>
+        <div class="kv"><span>Tu saldo disponible</span><b id="paySaldo"></b></div>
+        <button type="button" class="btn btn-primary" id="btnPagarSaldo" style="width:100%;display:none;margin-top:10px" onclick="pagarConSaldo()">Pagar con mi saldo</button>
         <h4 class="subh">Datos para transferencia</h4>
         <div class="kv"><span>Banco</span><span class="val"><b id="payBank">STP</b><button type="button" class="btn-copy" onclick="copyTransferField('bank','Banco copiado.')">Copiar</button></span></div>
         <div class="kv"><span>CLABE</span><span class="val"><b id="payClabe">6461 8040 1641 3134 24</b><button type="button" class="btn-copy" onclick="copyTransferField('clabe','CLABE copiada.')">Copiar</button></span></div>
@@ -399,6 +404,33 @@ textarea:focus{outline:2px solid var(--gold);outline-offset:1px;border-color:var
         <p style="font-size:13px;color:var(--muted);margin:12px 0 0">Tu documento se libera al confirmarse el pago.</p>
         <div style="height:6px"></div>
         <button type="button" class="btn btn-primary" style="width:100%" onclick="go('pedido')">Hacer pedido</button>
+      </div>
+    </section>
+
+    <!-- MI SALDO -->
+    <section id="view-saldo" class="hidden">
+      <h3 class="sec">Mi saldo</h3>
+      <p class="secsub">Recarga saldo y úsalo para tus documentos: cada documento se descuenta de tu saldo, sin transferir cada vez.</p>
+      <div class="card">
+        <div class="kv"><span>Tu saldo disponible</span><b class="pay-amount" id="saldoAmount"></b></div>
+        <div id="saldoMovs"></div>
+      </div>
+      <div style="height:14px"></div>
+      <div class="card">
+        <h4 class="subh" style="margin-top:0">Recargar saldo</h4>
+        <p style="font-size:13.5px;color:var(--muted);margin:0 0 8px">Transfiere a la misma cuenta de Gestoría Chiapas (banco STP, CLABE 6461 8040 1641 3134 24, beneficiario Emerides Morales) y verifica tu depósito aquí mismo: el monto se acredita a tu saldo en automático.</p>
+        <label class="f" for="recMonto">Monto a recargar (MXN)</label>
+        <input type="number" id="recMonto" min="1" step="0.01" placeholder="Ej. 100">
+        <label class="f" for="recTracking">Clave de rastreo de la transferencia</label>
+        <input type="text" id="recTracking" placeholder="La clave de rastreo que viene en tu comprobante" autocomplete="off">
+        <label class="f" for="recDate">Fecha de la transferencia</label>
+        <input type="date" id="recDate">
+        <label class="f" for="recBankFrom">Banco desde el que transferiste (opcional)</label>
+        <input type="text" id="recBankFrom" placeholder="Ej. BBVA, Banorte, Santander, Nu...">
+        <div style="height:10px"></div>
+        <button type="button" class="btn btn-primary" id="btnRecargar" style="width:100%" onclick="verificarRecarga()">Verificar y recargar mi saldo</button>
+        <p id="recResult" class="hidden" style="font-size:14px;margin:10px 0 0"></p>
+        <p style="font-size:13px;color:var(--muted);margin:12px 0 0">Tu saldo solo se acredita si el sistema confirma el depósito con el CEP de Banxico. Cada recarga usa una validación del proveedor, pero después cada documento pagado con saldo ya no gasta validaciones.</p>
       </div>
     </section>
 
@@ -504,6 +536,47 @@ var K_ORDERS = "gc_tienda_orders";
 var K_VERIFY = "gc_tienda_verify_config";
 var K_USED_KEYS = "gc_tienda_used_keys";
 var K_HISTORY = "gc_tienda_history";
+var K_BALANCE = "gc_tienda_balance";
+/* ---------- saldo (monedero) ----------
+   El saldo vive en este celular, por usuario (correo). No es un número
+   suelto: es un libro con las recargas verificadas y los descuentos, y el
+   saldo se calcula sumando recargas menos descuentos. Una recarga solo se
+   acredita si el proveedor confirma el depósito con el CEP de Banxico
+   (mismo chequeo que un pedido). */
+function loadBalanceBook(){
+  var all = loadJSON(K_BALANCE, {});
+  return (all && typeof all === "object") ? all : {};
+}
+function saveBalanceBook(book){ saveJSON(K_BALANCE, book); }
+function myBalanceBook(){
+  var book = loadBalanceBook();
+  var key = state.user ? state.user.email : "";
+  if(!book[key]) book[key] = { topups: [], deductions: [] };
+  return book[key];
+}
+function getBalance(){
+  var b = myBalanceBook();
+  var t = 0, d = 0, i;
+  for(i=0;i<b.topups.length;i++) t += Number(b.topups[i].amount) || 0;
+  for(i=0;i<b.deductions.length;i++) d += Number(b.deductions[i].amount) || 0;
+  return Math.max(0, t - d);
+}
+function creditBalance(amount, key, fecha, provider){
+  var book = loadBalanceBook();
+  var u = state.user ? state.user.email : "";
+  if(!book[u]) book[u] = { topups: [], deductions: [] };
+  book[u].topups.push({ amount: Number(amount), key: key, date: fecha, provider: provider, at: nowStr() });
+  saveBalanceBook(book);
+}
+function deductBalance(order){
+  var book = loadBalanceBook();
+  var u = state.user ? state.user.email : "";
+  if(!book[u]) book[u] = { topups: [], deductions: [] };
+  if(getBalance() + 0.001 < Number(order.price)) return false;
+  book[u].deductions.push({ folio: order.folio, service: order.serviceName, amount: Number(order.price), at: nowStr() });
+  saveBalanceBook(book);
+  return true;
+}
 /* Verificación automática: la página NO desbloquea por subir una foto.
    Solo desbloquea cuando el proveedor de verificación confirma contra el
    CEP oficial de Banxico que la transferencia SPEI existe, que el monto
@@ -793,13 +866,14 @@ function renderApp(){
 }
 function go(view){
   if(view==="admin" && !isOwnerSession()){ view = "inicio"; }
-  ["inicio","pedido","pago","pedidos","transferencia","admin"].forEach(function(v){
+  ["inicio","pedido","pago","pedidos","transferencia","saldo","admin"].forEach(function(v){
     document.getElementById("view-"+v).classList.toggle("hidden", v!==view);
   });
   var btns = document.querySelectorAll("[data-nav]");
   for(var i=0;i<btns.length;i++) btns[i].classList.toggle("active", btns[i].getAttribute("data-nav")===view);
   window.scrollTo({top:0, behavior:"smooth"});
   if(view==="pedidos") renderOrders();
+  if(view==="saldo") renderSaldo();
   if(view==="pago") renderPay();
   if(view==="pedido") syncOrderForm();
   if(view==="admin"){ fillAdminForm(); fillVerifyForm(); }
@@ -821,6 +895,12 @@ function syncOrderForm(){
     groups[i].classList.toggle("hidden", !on);
     var inputs = groups[i].querySelectorAll("input");
     for(var j=0;j<inputs.length;j++) inputs[j].disabled = !on;
+  }
+  var rqS = document.getElementById("rqSaldo"); if(rqS) rqS.textContent = money(getBalance());
+  var rqN = document.getElementById("rqSaldoNote");
+  if(rqN){
+    var saldo = getBalance();
+    rqN.textContent = saldo + 0.001 >= s.price ? "Puedes pagar este pedido con tu saldo." : (saldo > 0 ? "Tu saldo es de " + money(saldo) + ". Recarga o paga por transferencia." : "");
   }
 }
 function newFolio(){
@@ -896,6 +976,10 @@ function renderPay(){
   else { if(rWrap) rWrap.classList.add("hidden"); if(rNote) rNote.classList.add("hidden"); }
   var tk2 = document.getElementById("payTracking"); if(tk2) tk2.value = order.trackingKey || "";
   var pd2 = document.getElementById("payDate"); if(pd2) pd2.value = order.transferDate || "";
+  var saldo = getBalance();
+  var saldoEl = document.getElementById("paySaldo"); if(saldoEl) saldoEl.textContent = money(saldo);
+  var btnSaldo = document.getElementById("btnPagarSaldo");
+  if(btnSaldo) btnSaldo.style.display = (order.status === "Pendiente de pago" && saldo + 0.001 >= Number(order.price)) ? "block" : "none";
   renderVerifyUI(order);
 }
 function markPaid(){
@@ -1123,7 +1207,8 @@ function descargarDocumento(){
   lines.push("Beneficiario: " + s.beneficiary);
   if(order.trackingKey) lines.push("Clave de rastreo: " + order.trackingKey);
   if(order.transferDate) lines.push("Fecha de la transferencia: " + order.transferDate);
-  if(order.verified) lines.push("Verificación: CEP de Banxico confirmado por " + order.verified.provider + " el " + order.verified.at);
+  if(order.verified && order.verified.provider === "saldo") lines.push("Verificación: pagado con saldo de la aplicación el " + order.verified.at);
+  else if(order.verified) lines.push("Verificación: CEP de Banxico confirmado por " + order.verified.provider + " el " + order.verified.at);
   lines.push("Estado: PAGADO");
   lines.push("");
   lines.push("¡Pago verificado correctamente! Tu documento ya está desbloqueado y disponible para descargar.");
@@ -1291,6 +1376,175 @@ function verificarPagoAutomatico(){
   }).finally(function(){
     var b = document.getElementById("btnVerify");
     if(b){ b.disabled = false; b.textContent = "Verificar mi pago automáticamente"; }
+  });
+}
+
+
+/* ---------- vista Mi saldo ---------- */
+function renderSaldo(){
+  var amt = document.getElementById("saldoAmount"); if(amt) amt.textContent = money(getBalance());
+  var box = document.getElementById("saldoMovs"); if(!box) return;
+  var b = myBalanceBook();
+  var h = "";
+  var recs = b.topups.slice().reverse();
+  var deds = b.deductions.slice().reverse();
+  var i;
+  if(recs.length){
+    h += "<h4 class='subh'>Recargas</h4>";
+    for(i=0;i<Math.min(recs.length, 10);i++){
+      var t = recs[i];
+      h += "<div class='kv'><span>Recarga · " + esc(t.at || "") + "<br><small style='color:var(--muted)'>Clave " + esc(t.key || "") + "</small></span><b style='color:var(--green)'>+" + money(Number(t.amount) || 0) + "</b></div>";
+    }
+  }
+  if(deds.length){
+    h += "<h4 class='subh'>Documentos pagados con saldo</h4>";
+    for(i=0;i<Math.min(deds.length, 10);i++){
+      var d = deds[i];
+      h += "<div class='kv'><span>" + esc(d.service || "") + " · " + esc(d.folio || "") + "<br><small style='color:var(--muted)'>" + esc(d.at || "") + "</small></span><b>-" + money(Number(d.amount) || 0) + "</b></div>";
+    }
+  }
+  if(!h) h = "<p style='font-size:13.5px;color:var(--muted);margin:10px 0 0'>Aún no tienes movimientos. Recarga saldo para empezar.</p>";
+  box.innerHTML = h;
+}
+
+/* Pagar el pedido con el saldo de la aplicación: descuenta el precio del
+   saldo y desbloquea el documento. Solo funciona si el saldo alcanza; el
+   saldo solo existe por recargas verificadas con el CEP de Banxico. */
+function pagarConSaldo(){
+  var order = currentOrder(); if(!order) return;
+  if(order.status !== "Pendiente de pago"){ toast("Este pedido ya está pagado."); return; }
+  if(!deductBalance(order)){
+    toast("Tu saldo no alcanza para este documento. Recarga saldo primero.");
+    return;
+  }
+  order.status = "PAGADO";
+  order.verified = { provider: "saldo", key: "", date: "", amount: Number(order.price), at: nowStr() };
+  saveOrders(); renderPay(); renderOrders();
+  addHistory({ folio: order.folio, service: order.serviceName, price: order.price, key: "", date: "", status: "PAGADO (saldo)", at: nowStr() });
+  toast("Pagado con tu saldo. Tu documento ya está desbloqueado y disponible para descargar.");
+}
+
+/* ---------- recarga de saldo ----------
+   La recarga se acredita SOLO si el proveedor confirma el depósito con el
+   CEP de Banxico (mismo chequeo que un pedido: monto, CLABE y clave
+   exactos). Sin confirmación no se acredita nada. */
+function verificarRecarga(){
+  var res = document.getElementById("recResult");
+  function show(kind, msg){
+    if(!res) return;
+    res.classList.remove("hidden");
+    res.style.color = kind === "ok" ? "var(--green)" : (kind === "err" ? "#b3261e" : "var(--muted)");
+    res.textContent = msg;
+  }
+  var montoEl = document.getElementById("recMonto");
+  var tkEl = document.getElementById("recTracking");
+  var pdEl = document.getElementById("recDate");
+  var bfEl = document.getElementById("recBankFrom");
+  var monto = montoEl ? Number(montoEl.value) : NaN;
+  var key = tkEl ? tkEl.value.trim().toUpperCase() : "";
+  var fecha = pdEl ? pdEl.value : "";
+  var bancoEmisor = bfEl ? bfEl.value.trim() : "";
+  if(!(monto > 0)){
+    show("err", "Escribe el monto a recargar (mayor a $0).");
+    return;
+  }
+  if(!key || !fecha){
+    show("err", "Escribe la clave de rastreo y la fecha de tu transferencia. Esos datos vienen en tu comprobante.");
+    return;
+  }
+  if(isKeyUsed(key, "RECARGA")){
+    show("err", "Esa clave de rastreo ya se usó. No se puede usar dos veces.");
+    return;
+  }
+  var cfg = getVerifyConfig();
+  var s = getSettings();
+  var isVeriko = cfg.provider === "veriko";
+  var isSpeicep = cfg.provider === "speicep";
+  if(!cfg.endpoint || (!isVeriko && !isSpeicep)){
+    show("err", "La verificación automática no está activada en esta página. La dueña debe revisar la configuración en su Panel de la dueña.");
+    return;
+  }
+  if(isSpeicep && !bancoEmisor){
+    show("err", "Escribe el banco desde el que transferiste. Con ese dato la verificación consulta el CEP de Banxico sin gastar de más.");
+    return;
+  }
+  var btn = document.getElementById("btnRecargar");
+  if(btn){ btn.disabled = true; btn.textContent = "Verificando depósito..."; }
+  show("warn", "Verificando tu depósito contra el CEP de Banxico...");
+  var parts = fecha.split("-");
+  var fechaSpei = parts.length === 3 ? parts[2] + "-" + parts[1] + "-" + parts[0] : fecha;
+  var reqBody = isVeriko
+    ? { fecha: fecha, monto: monto, clave_rastreo: key,
+        cuenta_beneficiaria: String(s.clabe).replace(/\D/g, ""),
+        emisor: bancoEmisor || "" }
+    : { operationDate: fechaSpei, trackingKey: key, senderBank: bancoEmisor, amount: monto };
+  if(isSpeicep && cfg.receiverId) reqBody.receiverAccountId = cfg.receiverId;
+  var headers = { "Content-Type": "application/json" };
+  if(!isVeriko && cfg.apiKey) headers["Authorization"] = "Bearer " + cfg.apiKey;
+  fetch(cfg.endpoint, {
+    method: "POST",
+    headers: headers,
+    body: JSON.stringify(reqBody)
+  }).then(function(r){ return r.json().then(function(body){ return { ok: r.ok, status: r.status, body: body }; }).catch(function(){ return { ok: r.ok, status: r.status, body: {} }; }); })
+  .then(function(out){
+    var body = out.body || {};
+    if(!out.ok){
+      var code = body.error || "";
+      show("err", (code === "invalid_api_key" ? "La clave de API del proveedor no es válida. La dueña debe revisar la clave en su Panel de la dueña."
+        : code === "insufficient_credits" ? "Se acabaron las validaciones del proveedor. Hay que recargar créditos en su panel."
+        : code === "no_receiver_account" ? "Falta registrar la cuenta receptora (CLABE de la tienda) en el panel del proveedor."
+        : "El proveedor de verificación no respondió como se esperaba (código " + out.status + ").") + " Tu saldo no se recargó.");
+      return;
+    }
+    var status = "", montoDevuelto = NaN, cuentaDevuelta = "", claveDevuelta = "";
+    if(isVeriko){
+      var attrs = (body.data && body.data.attributes) || body.attributes || {};
+      status = String(attrs.status || body.status || "").toLowerCase();
+      var m = attrs.monto; if(m === undefined || m === null) m = attrs.amount;
+      if(m === undefined || m === null) m = attrs.monto_verificado;
+      montoDevuelto = Number(m);
+      cuentaDevuelta = String(attrs.cuenta_beneficiaria || attrs.cuenta || attrs.account || "").replace(/\D/g, "");
+      claveDevuelta = String(attrs.clave_rastreo || attrs.clave || attrs.trackingKey || "");
+    } else {
+      status = String(body.status || "").toLowerCase();
+      var cep = body.cep || {};
+      montoDevuelto = Number(cep.amount);
+      cuentaDevuelta = cep.receiver ? String(cep.receiver.account || "").replace(/\D/g, "") : "";
+      claveDevuelta = String(cep.trackingKey || "");
+    }
+    if(status !== "valid"){
+      show("err", status === "not_found" ? "No se encontró ningún depósito con esa clave de rastreo, fecha y monto en la cuenta de Gestoría Chiapas. Revisa los datos de tu comprobante."
+        : status === "returned" ? "Esa transferencia fue devuelta por el banco, por eso no se puede acreditar."
+        : status === "cep_unavailable" ? "El comprobante oficial (CEP) no está disponible en este momento para esa transferencia. Inténtalo de nuevo en unos minutos."
+        : "No se pudo verificar el depósito en Banxico. Tu saldo no se recargó. Revisa la clave de rastreo y la fecha e inténtalo de nuevo.");
+      return;
+    }
+    if(montoDevuelto && Math.abs(montoDevuelto - monto) > 0.01){
+      show("err", "El monto verificado (" + money(montoDevuelto) + ") no coincide con el monto de la recarga (" + money(monto) + "). Tu saldo no se recargó.");
+      return;
+    }
+    if(cuentaDevuelta && cuentaDevuelta !== String(s.clabe).replace(/\D/g, "")){
+      show("err", "La transferencia verificada no llegó a la CLABE de Gestoría Chiapas. Tu saldo no se recargó.");
+      return;
+    }
+    if(claveDevuelta && claveDevuelta.toUpperCase() !== key){
+      show("err", "La clave de rastreo verificada no coincide con la de tu comprobante. Tu saldo no se recargó.");
+      return;
+    }
+    markKeyUsed(key, "RECARGA");
+    creditBalance(monto, key, fecha, cfg.provider);
+    addHistory({ folio: "RECARGA", service: "Recarga de saldo", price: monto, key: key, date: fecha, status: "PAGADO", at: nowStr() });
+    show("ok", "¡Recarga verificada! Se acreditaron " + money(monto) + " a tu saldo. Tu saldo ahora es de " + money(getBalance()) + ".");
+    toast("Recarga verificada. Tu saldo ahora es de " + money(getBalance()) + ".");
+    if(montoEl) montoEl.value = "";
+    if(tkEl) tkEl.value = "";
+    if(pdEl) pdEl.value = "";
+    if(bfEl) bfEl.value = "";
+    renderSaldo();
+  }).catch(function(){
+    show("err", "No se pudo contactar al servicio de verificación. Tu saldo no se recargó; inténtalo de nuevo en unos minutos.");
+  }).finally(function(){
+    if(btn){ btn.disabled = false; btn.textContent = "Verificar y recargar mi saldo"; }
   });
 }
 
